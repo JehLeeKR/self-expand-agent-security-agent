@@ -13,6 +13,7 @@ import json
 import os
 
 from src.collector.arxiv import ArxivCollector
+from src.collector.cli_search import CLISearchCollector
 from src.collector.rss import RSSCollector
 from src.collector.search import SearchCollector
 from src.collector.web import WebCollector
@@ -48,10 +49,11 @@ class CollectorManager:
         self.threat_store = threat_store
         self.config = config
         self.collectors = [
-            SearchCollector(config),  # AI-powered deep search (like Claude chat)
-            ArxivCollector(config),   # Structured arXiv API queries
-            RSSCollector(config),     # RSS/Atom feed monitoring
-            WebCollector(config),     # Web scraping + Claude extraction
+            CLISearchCollector(config),  # Claude Code CLI deep research (best quality)
+            SearchCollector(config),     # Claude API with web_search tool
+            ArxivCollector(config),      # Structured arXiv API queries
+            RSSCollector(config),        # RSS/Atom feed monitoring
+            WebCollector(config),        # Web scraping + Claude extraction
         ]
 
     async def run(self) -> int:

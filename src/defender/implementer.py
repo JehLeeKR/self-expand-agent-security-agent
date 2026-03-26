@@ -63,28 +63,47 @@ class DefenseImplementer:
             return {}
 
     def _build_implementation_prompt(self, threat: ClassifiedThreat, plan: dict) -> str:
-        """Build the prompt that Claude Code CLI will use to implement the layer."""
+        """Build a detailed prompt for Claude Code CLI to implement the defense layer.
+
+        The prompt instructs Claude Code to:
+        1. Read existing defense layers for consistency
+        2. Write the new layer following established patterns
+        3. Verify syntax and imports
+        4. Run basic tests if possible
+        """
         layer_name = plan.get("layer_name", f"defense_{threat.category}_{threat.id[:8]}")
-        output_file = str(self.output_dir / f"{layer_name}.py")
+        safe_name = "".join(c if c.isalnum() or c == "_" else "_" for c in layer_name)
+        output_file = str(self.output_dir / f"{safe_name}.py")
 
         prompt = (
-            f"Implement a Python defense layer module at '{output_file}' for the "
-            f"self-expand-agent-security-agent project.\n\n"
-            f"## Threat Details\n"
+            f"You are implementing a new defense layer for an AI threat defense system.\n\n"
+            f"IMPORTANT: First, read these existing files to understand the codebase patterns:\n"
+            f"1. Read src/defender/layers/base.py - the base classes you must subclass\n"
+            f"2. Read src/defender/layers/input_validator.py - an example of a well-implemented layer\n"
+            f"3. Read src/defender/layers/output_filter.py - another example with regex patterns\n\n"
+            f"Then implement a new defense layer at '{output_file}'.\n\n"
+            f"## Threat to Defend Against\n"
             f"- Category: {threat.category}\n"
             f"- Severity: {threat.severity}\n"
             f"- Attack vector: {threat.attack_vector or 'N/A'}\n"
             f"- Affected components: {threat.affected_components or 'N/A'}\n\n"
             f"## Defense Plan\n{json.dumps(plan, indent=2)}\n\n"
-            f"## Requirements\n"
-            f"- Subclass `BaseDefenseLayer` from `src.defender.layers.base`.\n"
-            f"- Set appropriate `name`, `priority`, and `threat_categories`.\n"
-            f"- Implement `async inspect(self, data: DefenseContext) -> DefenseResult`.\n"
-            f"- Implement `get_rules(self) -> list[DetectionRule]`.\n"
-            f"- Use regex patterns and heuristic scoring.\n"
-            f"- Return 'block' for high-confidence threats, 'flag' for medium, 'pass' for clean.\n"
-            f"- Include proper error handling and logging via `src.utils.logging.get_logger()`.\n"
-            f"- Production quality: type hints, docstrings, no placeholder code.\n"
+            f"## Implementation Requirements\n"
+            f"- Subclass `BaseDefenseLayer` from `src.defender.layers.base`\n"
+            f"- Import: `from src.defender.layers.base import BaseDefenseLayer, "
+            f"DefenseContext, DefenseResult, DetectionRule`\n"
+            f"- Set class attributes: `name = '{safe_name}'`, appropriate `priority` "
+            f"and `threat_categories`\n"
+            f"- Implement `async inspect(self, data: DefenseContext) -> DefenseResult`\n"
+            f"- Implement `get_rules(self) -> list[DetectionRule]`\n"
+            f"- Use regex patterns with pre-compiled re.compile() for performance\n"
+            f"- Use composite scoring: regex matches + heuristic analysis\n"
+            f"- Return 'block' (confidence >= 0.85), 'flag' (>= 0.45), 'pass' otherwise\n"
+            f"- Use `from src.utils.logging import get_logger` for logging\n"
+            f"- Follow the exact same code patterns as input_validator.py\n"
+            f"- Production quality: type hints, docstrings, real detection logic\n\n"
+            f"After writing the file, verify it compiles: `python3 -m py_compile {output_file}`\n"
+            f"Fix any errors before finishing.\n"
         )
         return prompt
 
@@ -108,6 +127,11 @@ class DefenseImplementer:
     def implement_layer(self, threat: ClassifiedThreat) -> bool:
         """Implement a defense layer for a single threat.
 
+        Uses Claude Code CLI with a retry loop: if the first implementation
+        fails verification, the error is fed back to Claude Code for correction.
+        This mirrors how a developer would iteratively fix code — but fully
+        autonomous.
+
         Returns True if the layer was successfully implemented and registered.
         """
         plan = self._parse_defense_plan(threat)
@@ -120,43 +144,82 @@ class DefenseImplementer:
 
         output_file = self._determine_output_file(plan, threat)
         prompt = self._build_implementation_prompt(threat, plan)
+        max_retries = self.config.get("defense", {}).get("max_retry_implementations", 3)
 
         logger.info(
-            "Implementing defense layer",
+            "Implementing defense layer via Claude Code CLI",
             extra={
                 "extra_data": {
                     "threat_id": threat.id,
                     "category": threat.category,
                     "output_file": output_file,
+                    "max_retries": max_retries,
                 }
             },
         )
 
-        # Step 1: Generate code via Claude Code CLI.
-        result = self.claude_code.implement(prompt, output_file)
-        if not result.get("success"):
-            logger.error(
-                "Code generation failed",
-                extra={
-                    "extra_data": {
-                        "threat_id": threat.id,
-                        "output": str(result.get("output", ""))[:500],
-                    }
-                },
+        # Retry loop: implement → verify → fix if needed
+        last_error = ""
+        for attempt in range(1, max_retries + 1):
+            logger.info(
+                f"Implementation attempt {attempt}/{max_retries}",
+                extra={"extra_data": {"threat_id": threat.id, "attempt": attempt}},
             )
-            return False
 
-        # Step 2: Verify generated code.
-        verify = self.claude_code.verify_code(output_file)
-        if not verify.get("success"):
-            logger.error(
-                "Code verification failed",
-                extra={
-                    "extra_data": {
+            # Build prompt (include error feedback on retries)
+            if attempt == 1:
+                current_prompt = prompt
+            else:
+                current_prompt = (
+                    f"The previous implementation attempt for '{output_file}' failed "
+                    f"with this error:\n\n{last_error}\n\n"
+                    f"Please fix the file. Read it first, understand the error, "
+                    f"then fix it. After fixing, verify with: "
+                    f"`python3 -m py_compile {output_file}`\n\n"
+                    f"Original requirements:\n{prompt}"
+                )
+
+            # Step 1: Generate/fix code via Claude Code CLI
+            result = self.claude_code.implement(current_prompt, output_file)
+            if not result.get("success"):
+                last_error = str(result.get("output", ""))[:1000]
+                logger.warning(
+                    f"Implementation attempt {attempt} failed",
+                    extra={"extra_data": {
                         "threat_id": threat.id,
-                        "output": str(verify.get("output", ""))[:500],
-                    }
-                },
+                        "error": last_error[:300],
+                    }},
+                )
+                continue
+
+            # Step 2: Verify generated code
+            verify = self.claude_code.verify_code(output_file)
+            if not verify.get("success"):
+                last_error = str(verify.get("output", ""))[:1000]
+                logger.warning(
+                    f"Verification attempt {attempt} failed",
+                    extra={"extra_data": {
+                        "threat_id": threat.id,
+                        "error": last_error[:300],
+                    }},
+                )
+                continue
+
+            # Success — break out of retry loop
+            logger.info(
+                f"Implementation succeeded on attempt {attempt}",
+                extra={"extra_data": {"threat_id": threat.id}},
+            )
+            break
+        else:
+            # All retries exhausted
+            logger.error(
+                "All implementation attempts failed",
+                extra={"extra_data": {
+                    "threat_id": threat.id,
+                    "attempts": max_retries,
+                    "last_error": last_error[:500],
+                }},
             )
             return False
 

@@ -11,10 +11,11 @@ claude_api:
 
 search:
   enabled: true
+  cli_enabled: true               # Use Claude Code CLI for research (best quality)
   model: "claude-sonnet-4-6"
   max_tokens: 16000
   max_searches_per_session: 20
-  deep_dive: true
+  deep_dive: true                  # Two-round research: broad then targeted
 
 claude_code:
   binary: "claude"
