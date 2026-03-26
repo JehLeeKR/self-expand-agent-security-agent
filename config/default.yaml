@@ -44,6 +44,17 @@ defense:
   optimization_threshold: 0.5
 
 # ---------------------------------------------------------------------------
+# Multi-Agent Council Configuration
+# ---------------------------------------------------------------------------
+council:
+  enabled: true                    # Use multi-agent council for implementation
+  max_rounds: 3                    # Max review-revision cycles
+  required_approvals: 3            # Min approvals needed (out of 5 agents)
+  auto_fix: true                   # Auto-apply fixes between rounds
+  # Agent weights: security_auditor and red_team have veto power
+  # quality_gate has 2x vote weight (tie-breaker)
+
+# ---------------------------------------------------------------------------
 # Robustness & Resilience Configuration
 # ---------------------------------------------------------------------------
 robustness:

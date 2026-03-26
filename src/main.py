@@ -417,6 +417,60 @@ def cmd_variants(config: dict, threat_store: ThreatStore, result_store: ResultSt
     console.print(table)
 
 
+def cmd_council(config: dict, threat_store: ThreatStore, result_store: ResultStore) -> None:
+    """Show multi-agent council session history and status."""
+    from src.defender.council_manager import CouncilManager
+    from src.utils.claude_code import ClaudeCode
+
+    console.print(Panel("Multi-Agent Council Status", style="bold blue"))
+
+    code_config = config.get("claude_code", {})
+    claude_code = ClaudeCode(
+        binary=code_config.get("binary", "claude"),
+        timeout=code_config.get("timeout_seconds", 300),
+    )
+
+    council = CouncilManager(claude_code, result_store, config)
+    history = council.get_session_history(limit=10)
+
+    if not history:
+        console.print("[yellow]No council sessions recorded yet.[/yellow]")
+        council_config = config.get("council", {})
+        enabled = council_config.get("enabled", True)
+        console.print(f"Council mode: {'[green]enabled[/green]' if enabled else '[red]disabled[/red]'}")
+        console.print(f"Max rounds: {council_config.get('max_rounds', 3)}")
+        console.print(f"Required approvals: {council_config.get('required_approvals', 3)}")
+        return
+
+    table = Table(title="Recent Council Sessions")
+    table.add_column("Session", max_width=12)
+    table.add_column("Layer")
+    table.add_column("Decision")
+    table.add_column("Rounds", justify="right")
+    table.add_column("Votes")
+    table.add_column("Time")
+
+    for s in history:
+        decision = s.get("decision", "unknown")
+        style = "green" if decision == "approve" else "red" if decision == "reject" else "yellow"
+
+        votes = s.get("votes", [])
+        vote_summary = ", ".join(
+            f"{v['agent'][:3]}:{v['vote'][:1].upper()}" for v in votes
+        )
+
+        table.add_row(
+            s["session_id"][:10] + "...",
+            s.get("layer", "?"),
+            f"[{style}]{decision}[/{style}]",
+            str(s.get("rounds", 0)),
+            vote_summary,
+            s.get("started_at", "")[:19],
+        )
+
+    console.print(table)
+
+
 def cmd_cycle(config: dict, threat_store: ThreatStore, result_store: ResultStore) -> None:
     """Run the full pipeline with robustness: collect → analyze → implement → test → optimize → review → adapt → staging."""
     console.print(Panel("Running full defense cycle (with robustness)", style="bold magenta"))
@@ -556,9 +610,10 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("collect", help="Run threat collection from all sources")
     subparsers.add_parser("analyze", help="Classify, plan, and generate tests for unprocessed threats")
 
-    # Part 2: Claude Code CLI — Implementation
-    subparsers.add_parser("implement", help="Implement defense layers for planned threats")
+    # Part 2: Claude Code CLI — Implementation (with multi-agent council)
+    subparsers.add_parser("implement", help="Implement defense layers via multi-agent council")
     subparsers.add_parser("variants", help="Show variant twin status")
+    subparsers.add_parser("council", help="Show multi-agent council session history")
 
     # Part 3: Claude Code CLI — Management / CI-CD
     subparsers.add_parser("test", help="Run red team tests against all unaddressed threats")
@@ -581,9 +636,10 @@ COMMANDS = {
     # Part 1: Claude CLI — Intelligence
     "collect": cmd_collect,
     "analyze": cmd_analyze,
-    # Part 2: Claude Code CLI — Implementation
+    # Part 2: Claude Code CLI — Implementation (with multi-agent council)
     "implement": cmd_implement,
     "variants": cmd_variants,
+    "council": cmd_council,
     # Part 3: Claude Code CLI — Management / CI-CD
     "test": cmd_test,
     "optimize": cmd_optimize,

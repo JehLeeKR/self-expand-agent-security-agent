@@ -173,6 +173,37 @@ class AdaptationLog(Base):
     applied_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
+class CouncilSession(Base):
+    """Tracks a multi-agent council review session for a defense layer."""
+    __tablename__ = "council_sessions"
+
+    id = Column(String, primary_key=True)
+    layer_name = Column(String, nullable=False)
+    threat_id = Column(String)
+    phase = Column(String, default="implementation")  # implementation | review | revision | final_vote
+    consensus_reached = Column(Boolean, default=False)
+    consensus_action = Column(String)  # approve | reject | revise
+    total_rounds = Column(Integer, default=0)
+    max_rounds = Column(Integer, default=3)
+    started_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    completed_at = Column(DateTime)
+
+
+class CouncilVote(Base):
+    """Individual agent vote within a council session."""
+    __tablename__ = "council_votes"
+
+    id = Column(String, primary_key=True)
+    session_id = Column(String, nullable=False)
+    agent_role = Column(String, nullable=False)  # architect | security_auditor | red_team | test_engineer | quality_gate
+    round_number = Column(Integer, nullable=False)
+    vote = Column(String, nullable=False)  # approve | reject | revise
+    confidence = Column(Float, default=0.0)
+    findings = Column(Text)  # JSON: detailed review findings
+    suggested_fixes = Column(Text)  # JSON: list of fixes to apply
+    voted_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 class MetamorphicEvent(Base):
     """Records pattern rotation/evolution events for metamorphic defenses."""
     __tablename__ = "metamorphic_events"

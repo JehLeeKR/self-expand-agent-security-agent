@@ -61,6 +61,10 @@ class DefenseImplementer:
         self._integrity = None
         self._variant_mgr = None
         self._backup_mgr = None
+        self._council = None
+
+        # Council mode: if enabled, implementations go through multi-agent review
+        self.council_enabled = self.config.get("council", {}).get("enabled", True)
 
     @property
     def staging(self):
@@ -86,6 +90,15 @@ class DefenseImplementer:
                 self.claude_code, self.layer_registry, self.result_store, self.config
             )
         return self._variant_mgr
+
+    @property
+    def council(self):
+        if self._council is None:
+            from src.defender.council_manager import CouncilManager
+            self._council = CouncilManager(
+                self.claude_code, self.result_store, self.config
+            )
+        return self._council
 
     @property
     def backup_mgr(self):
@@ -173,44 +186,58 @@ class DefenseImplementer:
         return threat.category in categories and len(categories[threat.category]) > 0
 
     # ------------------------------------------------------------------
-    # Public API
+    # Implementation strategies
     # ------------------------------------------------------------------
 
-    def implement_layer(self, threat: ClassifiedThreat) -> bool:
-        """Implement a defense layer for a single threat.
+    def _implement_with_council(
+        self, threat: ClassifiedThreat, plan: dict,
+        output_file: str, safe_name: str,
+    ) -> bool:
+        """Implement via multi-agent council review."""
+        logger.info(
+            "Using multi-agent council for implementation",
+            extra={"extra_data": {"threat_id": threat.id}},
+        )
 
-        Uses Claude Code CLI with a retry loop: if the first implementation
-        fails verification, the error is fed back to Claude Code for correction.
-        This mirrors how a developer would iteratively fix code — but fully
-        autonomous.
+        result = self.council.run_council_review(
+            threat_category=threat.category,
+            threat_severity=threat.severity,
+            attack_vector=threat.attack_vector or "N/A",
+            defense_plan=plan,
+            output_file=output_file,
+            safe_name=safe_name,
+            threat_id=threat.id,
+        )
 
-        Returns True if the layer was successfully implemented and registered.
-        """
-        plan = self._parse_defense_plan(threat)
-        if not plan:
+        if result.get("approved"):
+            logger.info(
+                "Council APPROVED implementation",
+                extra={"extra_data": {
+                    "threat_id": threat.id,
+                    "rounds": result.get("rounds"),
+                    "session_id": result.get("session_id"),
+                }},
+            )
+            return True
+        else:
             logger.warning(
-                "No defense plan available for threat",
-                extra={"extra_data": {"threat_id": threat.id}},
+                "Council REJECTED implementation",
+                extra={"extra_data": {
+                    "threat_id": threat.id,
+                    "rounds": result.get("rounds"),
+                    "final_vote": result.get("final_vote"),
+                    "votes": result.get("all_votes"),
+                }},
             )
             return False
 
-        output_file = self._determine_output_file(plan, threat)
+    def _implement_with_retry(
+        self, threat: ClassifiedThreat, plan: dict, output_file: str,
+    ) -> bool:
+        """Implement via simple retry loop with error feedback (legacy mode)."""
         prompt = self._build_implementation_prompt(threat, plan)
         max_retries = self.config.get("defense", {}).get("max_retry_implementations", 3)
 
-        logger.info(
-            "Implementing defense layer via Claude Code CLI",
-            extra={
-                "extra_data": {
-                    "threat_id": threat.id,
-                    "category": threat.category,
-                    "output_file": output_file,
-                    "max_retries": max_retries,
-                }
-            },
-        )
-
-        # Retry loop: implement → verify → fix if needed
         last_error = ""
         for attempt in range(1, max_retries + 1):
             logger.info(
@@ -218,7 +245,6 @@ class DefenseImplementer:
                 extra={"extra_data": {"threat_id": threat.id, "attempt": attempt}},
             )
 
-            # Build prompt (include error feedback on retries)
             if attempt == 1:
                 current_prompt = prompt
             else:
@@ -231,7 +257,6 @@ class DefenseImplementer:
                     f"Original requirements:\n{prompt}"
                 )
 
-            # Step 1: Generate/fix code via Claude Code CLI
             result = self.claude_code.implement(current_prompt, output_file)
             if not result.get("success"):
                 last_error = str(result.get("output", ""))[:1000]
@@ -244,38 +269,78 @@ class DefenseImplementer:
                 )
                 continue
 
-            # Step 2: Verify generated code
             verify = self.claude_code.verify_code(output_file)
             if not verify.get("success"):
                 last_error = str(verify.get("output", ""))[:1000]
-                logger.warning(
-                    f"Verification attempt {attempt} failed",
-                    extra={"extra_data": {
-                        "threat_id": threat.id,
-                        "error": last_error[:300],
-                    }},
-                )
                 continue
 
-            # Success — break out of retry loop
             logger.info(
                 f"Implementation succeeded on attempt {attempt}",
                 extra={"extra_data": {"threat_id": threat.id}},
             )
-            break
-        else:
-            # All retries exhausted
-            logger.error(
-                "All implementation attempts failed",
-                extra={"extra_data": {
-                    "threat_id": threat.id,
-                    "attempts": max_retries,
-                    "last_error": last_error[:500],
-                }},
+            return True
+
+        logger.error(
+            "All implementation attempts failed",
+            extra={"extra_data": {
+                "threat_id": threat.id,
+                "attempts": max_retries,
+            }},
+        )
+        return False
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def implement_layer(self, threat: ClassifiedThreat) -> bool:
+        """Implement a defense layer for a single threat.
+
+        Two modes:
+        - **Council mode** (default): Multi-agent council reviews the implementation.
+          Architect implements, Security Auditor + Red Team + Test Engineer review,
+          Quality Gate makes the final call. Up to N revision rounds.
+        - **Legacy mode**: Simple retry loop with error feedback.
+
+        After implementation, the layer goes through:
+        static analysis → integrity hash → registration → staging → backup → variants.
+
+        Returns True if the layer was successfully implemented and registered.
+        """
+        plan = self._parse_defense_plan(threat)
+        if not plan:
+            logger.warning(
+                "No defense plan available for threat",
+                extra={"extra_data": {"threat_id": threat.id}},
             )
             return False
 
-        # Step 3: Static security analysis before registration
+        output_file = self._determine_output_file(plan, threat)
+        layer_name = plan.get("layer_name", f"defense_{threat.category}_{threat.id[:8]}")
+        safe_name = "".join(c if c.isalnum() or c == "_" else "_" for c in layer_name)
+
+        logger.info(
+            "Implementing defense layer",
+            extra={"extra_data": {
+                "threat_id": threat.id,
+                "category": threat.category,
+                "output_file": output_file,
+                "council_enabled": self.council_enabled,
+            }},
+        )
+
+        # ----- Implementation phase -----
+        if self.council_enabled:
+            success = self._implement_with_council(threat, plan, output_file, safe_name)
+        else:
+            success = self._implement_with_retry(threat, plan, output_file)
+
+        if not success:
+            return False
+
+        # ----- Post-implementation robustness pipeline -----
+
+        # Static security analysis
         static = self.integrity.static_analysis(output_file)
         if not static["safe"]:
             logger.error(
@@ -287,13 +352,10 @@ class DefenseImplementer:
             )
             return False
 
-        # Step 4: Register integrity hash
-        self.integrity.register_hash(
-            plan.get("layer_name", f"defense_{threat.category}_{threat.id[:8]}"),
-            output_file,
-        )
+        # Register integrity hash
+        self.integrity.register_hash(safe_name, output_file)
 
-        # Step 5: Attempt to import and register the layer
+        # Attempt to import and register the layer
         try:
             layer_instance = self._load_layer_from_file(output_file, plan, threat)
             if layer_instance is not None:
