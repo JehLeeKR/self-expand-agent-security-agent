@@ -201,8 +201,35 @@ class ThreatClassifier:
         )
         return classified
 
+    def _build_context_summary(self) -> str:
+        """Build a summary of previously classified threats for context continuity.
+
+        This allows the classifier to be aware of what has already been seen,
+        avoiding duplicate categorizations and enabling cross-threat reasoning.
+        """
+        prior = self.threat_store.get_all_classified()
+        if not prior:
+            return ""
+
+        # Summarize the last 20 classified threats to keep context manageable
+        recent = prior[:20]
+        lines = [
+            "\n## Previously classified threats (for context - avoid duplicate analysis):"
+        ]
+        for t in recent:
+            lines.append(
+                f"- [{t.category}/{t.severity}] {t.attack_vector[:100] if t.attack_vector else 'N/A'}"
+            )
+        return "\n".join(lines)
+
     def run(self) -> int:
         """Classify all unclassified threats.
+
+        Uses conversation context: a summary of previously classified threats
+        is injected into each call so the AI can reason about the full threat
+        landscape. The system prompt is cached via Anthropic's prompt caching
+        so repeated calls within the 5-minute TTL reuse cached tokens (~90%
+        cost reduction on the system prompt portion).
 
         Returns:
             Number of threats successfully classified.
@@ -217,10 +244,49 @@ class ThreatClassifier:
             extra={"extra_data": {"count": len(raw_threats)}},
         )
 
+        # Build cumulative context of prior classifications
+        context_summary = self._build_context_summary()
+
+        # Conversation accumulator: carries assistant responses so the AI
+        # remembers what it classified earlier in this batch.
+        conversation: list[dict] = []
+        if context_summary:
+            conversation.append({"role": "user", "content": context_summary})
+            conversation.append({
+                "role": "assistant",
+                "content": "Understood. I have the context of previously classified threats "
+                           "and will use it to inform my analysis of new threats.",
+            })
+
         classified_count = 0
+        system_prompt = self._build_system_prompt()
+
         for raw_threat in raw_threats:
             try:
-                self.classify_threat(raw_threat)
+                user_msg = self._build_user_message(raw_threat)
+
+                # Use cached system prompt + accumulated conversation
+                result = self.claude_api.query_json(
+                    system_prompt,
+                    user_msg,
+                    conversation=conversation if conversation else None,
+                    cache_system_prompt=True,
+                )
+
+                # Process the result (same validation as classify_threat)
+                classified = self._process_classification(raw_threat, result)
+
+                # Add this exchange to conversation context for subsequent calls
+                conversation.append({"role": "user", "content": user_msg})
+                conversation.append({
+                    "role": "assistant",
+                    "content": json.dumps(result),
+                })
+
+                # Keep conversation manageable (last 10 exchanges = 20 messages)
+                if len(conversation) > 22:
+                    conversation = conversation[:2] + conversation[-20:]
+
                 classified_count += 1
             except (ValueError, Exception) as exc:
                 logger.error(
@@ -238,6 +304,57 @@ class ThreatClassifier:
                 "total": len(raw_threats),
                 "classified": classified_count,
                 "failed": len(raw_threats) - classified_count,
+                "conversation_turns": len(conversation),
             }},
         )
         return classified_count
+
+    def _process_classification(self, raw_threat: RawThreat, result: dict) -> ClassifiedThreat:
+        """Validate and store a classification result (extracted for reuse)."""
+        valid_categories = {
+            "prompt_injection", "data_exfiltration", "jailbreak",
+            "tool_abuse", "context_manipulation", "privilege_escalation",
+        }
+        valid_severities = {"critical", "high", "medium", "low"}
+        valid_components = {"input", "output", "context", "tools", "storage"}
+
+        category = result.get("category", "")
+        if category not in valid_categories:
+            category = "prompt_injection"
+
+        severity = result.get("severity", "")
+        if severity not in valid_severities:
+            severity = "medium"
+
+        affected_components = [
+            c for c in result.get("affected_components", []) if c in valid_components
+        ]
+        if not affected_components:
+            affected_components = ["input"]
+
+        covered_by_layers = result.get("covered_by_layers", [])
+        if not isinstance(covered_by_layers, list):
+            covered_by_layers = []
+
+        attack_vector = result.get("attack_vector", "No attack vector description provided.")
+
+        classified = self.threat_store.add_classified_threat(
+            raw_threat_id=raw_threat.id,
+            category=category,
+            severity=severity,
+            attack_vector=attack_vector,
+            affected_components=json.dumps(affected_components),
+            covered_by_layers=json.dumps(covered_by_layers),
+            status="new",
+        )
+
+        logger.info(
+            "Threat classified",
+            extra={"extra_data": {
+                "threat_id": classified.id,
+                "raw_threat_id": raw_threat.id,
+                "category": category,
+                "severity": severity,
+            }},
+        )
+        return classified

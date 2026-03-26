@@ -9,6 +9,13 @@ claude_api:
   max_tokens: 4096
   # API key from ANTHROPIC_API_KEY env var
 
+search:
+  enabled: true
+  model: "claude-sonnet-4-6"
+  max_tokens: 16000
+  max_searches_per_session: 20
+  deep_dive: true
+
 claude_code:
   binary: "claude"
   working_dir: "./src/defender/layers"
