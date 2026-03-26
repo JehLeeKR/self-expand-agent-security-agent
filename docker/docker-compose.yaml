@@ -1,0 +1,35 @@
+version: "3.8"
+
+services:
+  victim:
+    build:
+      context: .
+      dockerfile: Dockerfile.victim
+    container_name: threat-defense-victim
+    mem_limit: 512m
+    cpus: 1.0
+    environment:
+      - VICTIM_PROFILE=${VICTIM_PROFILE:-corporate_assistant}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    volumes:
+      - seed_data:/home/victim/seed
+    ports:
+      - "8080:8080"
+    networks:
+      - isolated
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+networks:
+  isolated:
+    driver: bridge
+    internal: true
+
+volumes:
+  seed_data:
+    driver: local
