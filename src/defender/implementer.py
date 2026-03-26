@@ -1,4 +1,11 @@
-"""Automated defense layer implementation using Claude Code CLI."""
+"""Automated defense layer implementation using Claude Code CLI.
+
+Integrates with the robustness system:
+- New layers enter staging evaluation (shadow → canary → production)
+- Variant twins are generated for diversity
+- Integrity hashes are registered after implementation
+- Backups are created for rollback capability
+"""
 
 from __future__ import annotations
 
@@ -20,12 +27,16 @@ _LAYER_OUTPUT_DIR = Path("src/defender/layers")
 class DefenseImplementer:
     """Uses Claude Code CLI to autonomously implement defense layers for classified threats.
 
-    The workflow for each threat:
-    1. Read the threat's ``defense_plan`` (JSON stored on ``ClassifiedThreat``).
-    2. Invoke Claude Code CLI to generate or update a defense layer module.
-    3. Verify the generated code.
-    4. Register the new layer in the ``LayerRegistry``.
-    5. Update threat status.
+    Enhanced workflow for each threat:
+    1. Read the threat's ``defense_plan`` (JSON stored on ``ClassifiedThreat``)
+    2. Invoke Claude Code CLI to generate or update a defense layer module
+    3. Verify the generated code (syntax + static analysis)
+    4. Register integrity hash for tamper detection
+    5. Enter staging pipeline (shadow evaluation)
+    6. Generate variant twins for defense diversity
+    7. Register the new layer in the ``LayerRegistry``
+    8. Create backup snapshot for rollback
+    9. Update threat status
     """
 
     def __init__(
@@ -44,6 +55,47 @@ class DefenseImplementer:
         self.output_dir = Path(
             self.config.get("layer_output_dir", str(_LAYER_OUTPUT_DIR))
         )
+
+        # Lazy-loaded robustness components
+        self._staging = None
+        self._integrity = None
+        self._variant_mgr = None
+        self._backup_mgr = None
+
+    @property
+    def staging(self):
+        if self._staging is None:
+            from src.defender.staging import StagingPipeline
+            self._staging = StagingPipeline(self.result_store, self.config)
+        return self._staging
+
+    @property
+    def integrity(self):
+        if self._integrity is None:
+            from src.defender.integrity import IntegrityVerifier
+            self._integrity = IntegrityVerifier(
+                self.claude_code, self.result_store, self.config
+            )
+        return self._integrity
+
+    @property
+    def variant_mgr(self):
+        if self._variant_mgr is None:
+            from src.defender.variant_manager import VariantManager
+            self._variant_mgr = VariantManager(
+                self.claude_code, self.layer_registry, self.result_store, self.config
+            )
+        return self._variant_mgr
+
+    @property
+    def backup_mgr(self):
+        if self._backup_mgr is None:
+            from src.defender.resilience import BackupManager
+            robustness = self.config.get("robustness", {})
+            self._backup_mgr = BackupManager(
+                robustness.get("backup_dir", "data/layer_backups")
+            )
+        return self._backup_mgr
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -223,7 +275,25 @@ class DefenseImplementer:
             )
             return False
 
-        # Step 3: Attempt to import and register the layer.
+        # Step 3: Static security analysis before registration
+        static = self.integrity.static_analysis(output_file)
+        if not static["safe"]:
+            logger.error(
+                "Generated layer FAILED static security analysis",
+                extra={"extra_data": {
+                    "threat_id": threat.id,
+                    "issues": static["issues"],
+                }},
+            )
+            return False
+
+        # Step 4: Register integrity hash
+        self.integrity.register_hash(
+            plan.get("layer_name", f"defense_{threat.category}_{threat.id[:8]}"),
+            output_file,
+        )
+
+        # Step 5: Attempt to import and register the layer
         try:
             layer_instance = self._load_layer_from_file(output_file, plan, threat)
             if layer_instance is not None:
@@ -233,11 +303,43 @@ class DefenseImplementer:
                 "Failed to load and register generated layer",
                 extra={"extra_data": {"threat_id": threat.id, "file": output_file}},
             )
-            # Not fatal -- the layer file was still created and can be loaded later.
+
+        # Step 6: Enter staging pipeline (shadow evaluation)
+        layer_name = plan.get("layer_name", f"defense_{threat.category}_{threat.id[:8]}")
+        safe_name = "".join(c if c.isalnum() or c == "_" else "_" for c in layer_name)
+        self.staging.enter_staging(safe_name)
+
+        # Step 7: Create backup snapshot
+        self.backup_mgr.snapshot(safe_name, output_file)
+
+        # Step 8: Generate variant twins (non-blocking — failures don't block main impl)
+        try:
+            variants = self.variant_mgr.generate_variants(
+                threat.category, plan,
+            )
+            if variants:
+                logger.info(
+                    "Variant twins generated",
+                    extra={"extra_data": {
+                        "threat_id": threat.id,
+                        "variants": variants,
+                    }},
+                )
+        except Exception:
+            logger.exception(
+                "Variant generation failed (non-fatal)",
+                extra={"extra_data": {"threat_id": threat.id}},
+            )
 
         logger.info(
-            "Defense layer implemented successfully",
-            extra={"extra_data": {"threat_id": threat.id, "file": output_file}},
+            "Defense layer implemented with full robustness pipeline",
+            extra={"extra_data": {
+                "threat_id": threat.id,
+                "file": output_file,
+                "staging": "shadow",
+                "integrity_registered": True,
+                "backup_created": True,
+            }},
         )
         return True
 
