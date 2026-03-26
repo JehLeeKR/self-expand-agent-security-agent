@@ -9,6 +9,14 @@ claude_api:
   max_tokens: 4096
   # API key from ANTHROPIC_API_KEY env var
 
+search:
+  enabled: true
+  cli_enabled: true               # Use Claude Code CLI for research (best quality)
+  model: "claude-sonnet-4-6"
+  max_tokens: 16000
+  max_searches_per_session: 20
+  deep_dive: true                  # Two-round research: broad then targeted
+
 claude_code:
   binary: "claude"
   working_dir: "./src/defender/layers"
@@ -34,3 +42,56 @@ defense:
   min_effectiveness_score: 0.7
   max_retry_implementations: 3
   optimization_threshold: 0.5
+
+# ---------------------------------------------------------------------------
+# Multi-Agent Council Configuration
+# ---------------------------------------------------------------------------
+council:
+  enabled: true                    # Use multi-agent council for implementation
+  max_rounds: 3                    # Max review-revision cycles
+  required_approvals: 3            # Min approvals needed (out of 5 agents)
+  auto_fix: true                   # Auto-apply fixes between rounds
+  # Agent weights: security_auditor and red_team have veto power
+  # quality_gate has 2x vote weight (tie-breaker)
+
+# ---------------------------------------------------------------------------
+# Robustness & Resilience Configuration
+# ---------------------------------------------------------------------------
+robustness:
+  # Variant twins: multiple implementations per threat category
+  variants_per_category: 3
+  variant_rotation_interval_hours: 24
+
+  # Staging evaluation pipeline
+  staging:
+    shadow:
+      min_hours: 24
+      min_test_runs: 10
+    canary:
+      min_hours: 12
+      min_test_runs: 20
+    staged_rollout:
+      min_hours: 24
+      min_test_runs: 30
+
+  # Self-learning / adaptation
+  min_runs_for_adaptation: 10
+  fp_rate_ceiling: 0.10           # Max acceptable false positive rate
+  detection_floor: 0.60           # Min acceptable detection rate
+  improvement_threshold: 0.05     # Min improvement to justify adaptation
+
+  # Metamorphic defense
+  metamorphic_interval_hours: 48  # How often to morph each layer
+
+  # Integrity verification
+  audit_interval_hours: 72        # Deep security audit interval
+  security_audit_interval_hours: 72
+  code_quality_interval_hours: 48
+
+  # Circuit breaker
+  circuit_breaker_threshold: 3    # Failures before tripping
+  circuit_breaker_reset_seconds: 300
+
+  # Backups
+  backup_dir: "./data/layer_backups"
+  max_backups_per_layer: 5

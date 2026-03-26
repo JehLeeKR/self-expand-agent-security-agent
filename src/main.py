@@ -243,16 +243,249 @@ def cmd_optimize(config: dict, threat_store: ThreatStore, result_store: ResultSt
     console.print("[green]Optimization complete.[/green]")
 
 
+def cmd_integrity(config: dict, threat_store: ThreatStore, result_store: ResultStore) -> None:
+    """Run integrity verification on all defense layers."""
+    from src.defender.integrity import IntegrityVerifier
+    from src.utils.claude_code import ClaudeCode
+
+    console.print(Panel("Running integrity verification", style="bold red"))
+
+    code_config = config.get("claude_code", {})
+    claude_code = ClaudeCode(
+        binary=code_config.get("binary", "claude"),
+        timeout=code_config.get("timeout_seconds", 300),
+    )
+
+    verifier = IntegrityVerifier(claude_code, result_store, config)
+    report = verifier.run()
+
+    preflight = report.get("preflight", {})
+    if preflight.get("all_safe"):
+        console.print("[green]All layers passed integrity checks[/green]")
+    else:
+        console.print("[red]INTEGRITY ISSUES DETECTED[/red]")
+        for name, result in preflight.get("results", {}).items():
+            status = result.get("status", "unknown")
+            style = "green" if status == "ok" else "red"
+            console.print(f"  [{style}]{name}: {status}[/{style}]")
+
+    audits = report.get("deep_audits", {})
+    if audits:
+        console.print(f"\n[bold]Deep audits performed:[/bold] {len(audits)}")
+        for name, audit in audits.items():
+            score = audit.get("score", 0)
+            style = "green" if score >= 0.8 else "yellow" if score >= 0.5 else "red"
+            console.print(f"  [{style}]{name}: score={score:.2f}[/{style}]")
+
+
+def cmd_review(config: dict, threat_store: ThreatStore, result_store: ResultStore) -> None:
+    """Run periodic code review on defense layers."""
+    from src.defender.reviewer import PeriodicReviewer
+    from src.utils.claude_code import ClaudeCode
+
+    console.print(Panel("Running periodic review", style="bold blue"))
+
+    code_config = config.get("claude_code", {})
+    claude_code = ClaudeCode(
+        binary=code_config.get("binary", "claude"),
+        timeout=code_config.get("timeout_seconds", 300),
+    )
+
+    reviewer = PeriodicReviewer(claude_code, result_store, config)
+    report = reviewer.run()
+
+    reviews = report.get("reviews", [])
+    fixes = report.get("auto_fixes", [])
+    console.print(f"[green]Reviews complete:[/green] {len(reviews)} review(s), {len(fixes)} auto-fix(es)")
+
+    for r in reviews:
+        findings_count = len(r.get("findings", {}).get("findings", []))
+        console.print(f"  {r['layer']} ({r['type']}): {findings_count} finding(s)")
+
+
+def cmd_adapt(config: dict, threat_store: ThreatStore, result_store: ResultStore) -> None:
+    """Run self-learning adaptation on defense layers."""
+    from src.defender.self_learner import SelfLearner
+    from src.utils.claude_code import ClaudeCode
+
+    console.print(Panel("Running self-learning adaptation", style="bold cyan"))
+
+    code_config = config.get("claude_code", {})
+    claude_code = ClaudeCode(
+        binary=code_config.get("binary", "claude"),
+        timeout=code_config.get("timeout_seconds", 300),
+    )
+
+    learner = SelfLearner(claude_code, result_store, config)
+    results = learner.run()
+
+    console.print(f"[green]Adaptation complete:[/green] {len(results)} layer(s) adapted")
+    for r in results:
+        console.print(f"  {r['layer']}: {len(r['adaptations'])} adaptation(s)")
+
+
+def cmd_morph(config: dict, threat_store: ThreatStore, result_store: ResultStore) -> None:
+    """Run metamorphic transformation on defense layers."""
+    from src.defender.metamorphic import MetamorphicEngine
+    from src.utils.claude_code import ClaudeCode
+
+    console.print(Panel("Running metamorphic transformations", style="bold magenta"))
+
+    code_config = config.get("claude_code", {})
+    claude_code = ClaudeCode(
+        binary=code_config.get("binary", "claude"),
+        timeout=code_config.get("timeout_seconds", 300),
+    )
+
+    engine = MetamorphicEngine(claude_code, result_store, config)
+    results = engine.run()
+
+    console.print(f"[green]Metamorphic cycle complete:[/green] {len(results)} layer(s) transformed")
+    for r in results:
+        console.print(f"  {r['layer']}: {r['morph_type']}")
+
+
+def cmd_staging(config: dict, threat_store: ThreatStore, result_store: ResultStore) -> None:
+    """Evaluate staging pipeline and promote/reject layers."""
+    from src.defender.staging import StagingPipeline
+
+    console.print(Panel("Evaluating staging pipeline", style="bold yellow"))
+
+    pipeline = StagingPipeline(result_store, config)
+    result = pipeline.evaluate_promotions()
+
+    promoted = result.get("promoted", [])
+    rejected = result.get("rejected", [])
+    unchanged = result.get("unchanged", [])
+
+    if promoted:
+        for p in promoted:
+            console.print(f"  [green]PROMOTED:[/green] {p['layer']} → {p['to_stage']}")
+    if rejected:
+        for r in rejected:
+            console.print(f"  [red]REJECTED:[/red] {r['layer']} — {r.get('reason', '')}")
+    if unchanged:
+        for u in unchanged:
+            console.print(f"  [dim]{u['layer']}: {u['stage']}[/dim]")
+
+    console.print(
+        f"[green]Staging evaluation:[/green] "
+        f"{len(promoted)} promoted, {len(rejected)} rejected, {len(unchanged)} unchanged"
+    )
+
+
+def cmd_variants(config: dict, threat_store: ThreatStore, result_store: ResultStore) -> None:
+    """Show variant twin status and rotate active variants."""
+    from src.defender.variant_manager import VariantManager
+    from src.defender.layer_registry import LayerRegistry
+    from src.utils.claude_code import ClaudeCode
+
+    console.print(Panel("Variant twin status", style="bold blue"))
+
+    code_config = config.get("claude_code", {})
+    claude_code = ClaudeCode(
+        binary=code_config.get("binary", "claude"),
+        timeout=code_config.get("timeout_seconds", 300),
+    )
+    layer_registry = LayerRegistry(result_store)
+    mgr = VariantManager(claude_code, layer_registry, result_store, config)
+
+    status = mgr.get_variant_status()
+    if not status:
+        console.print("[yellow]No variant groups found.[/yellow]")
+        return
+
+    table = Table(title="Variant Twins")
+    table.add_column("Category")
+    table.add_column("Active Variant")
+    table.add_column("Strategy")
+    table.add_column("Variants", justify="right")
+    table.add_column("Rotation")
+
+    for category, info in status.items():
+        table.add_row(
+            category,
+            info.get("active_variant", "none"),
+            next(
+                (v["strategy"] for v in info.get("variants", []) if v["is_active"]),
+                "—",
+            ),
+            str(len(info.get("variants", []))),
+            info.get("rotation_strategy", "round_robin"),
+        )
+
+    console.print(table)
+
+
+def cmd_council(config: dict, threat_store: ThreatStore, result_store: ResultStore) -> None:
+    """Show multi-agent council session history and status."""
+    from src.defender.council_manager import CouncilManager
+    from src.utils.claude_code import ClaudeCode
+
+    console.print(Panel("Multi-Agent Council Status", style="bold blue"))
+
+    code_config = config.get("claude_code", {})
+    claude_code = ClaudeCode(
+        binary=code_config.get("binary", "claude"),
+        timeout=code_config.get("timeout_seconds", 300),
+    )
+
+    council = CouncilManager(claude_code, result_store, config)
+    history = council.get_session_history(limit=10)
+
+    if not history:
+        console.print("[yellow]No council sessions recorded yet.[/yellow]")
+        council_config = config.get("council", {})
+        enabled = council_config.get("enabled", True)
+        console.print(f"Council mode: {'[green]enabled[/green]' if enabled else '[red]disabled[/red]'}")
+        console.print(f"Max rounds: {council_config.get('max_rounds', 3)}")
+        console.print(f"Required approvals: {council_config.get('required_approvals', 3)}")
+        return
+
+    table = Table(title="Recent Council Sessions")
+    table.add_column("Session", max_width=12)
+    table.add_column("Layer")
+    table.add_column("Decision")
+    table.add_column("Rounds", justify="right")
+    table.add_column("Votes")
+    table.add_column("Time")
+
+    for s in history:
+        decision = s.get("decision", "unknown")
+        style = "green" if decision == "approve" else "red" if decision == "reject" else "yellow"
+
+        votes = s.get("votes", [])
+        vote_summary = ", ".join(
+            f"{v['agent'][:3]}:{v['vote'][:1].upper()}" for v in votes
+        )
+
+        table.add_row(
+            s["session_id"][:10] + "...",
+            s.get("layer", "?"),
+            f"[{style}]{decision}[/{style}]",
+            str(s.get("rounds", 0)),
+            vote_summary,
+            s.get("started_at", "")[:19],
+        )
+
+    console.print(table)
+
+
 def cmd_cycle(config: dict, threat_store: ThreatStore, result_store: ResultStore) -> None:
-    """Run the full pipeline: collect -> analyze -> implement -> test -> optimize."""
-    console.print(Panel("Running full defense cycle", style="bold magenta"))
+    """Run the full pipeline with robustness: collect → analyze → implement → test → optimize → review → adapt → staging."""
+    console.print(Panel("Running full defense cycle (with robustness)", style="bold magenta"))
 
     steps = [
         ("Collect", cmd_collect),
         ("Analyze", cmd_analyze),
+        ("Integrity Check", cmd_integrity),
         ("Implement", cmd_implement),
         ("Test", cmd_test),
+        ("Staging Evaluation", cmd_staging),
         ("Optimize", cmd_optimize),
+        ("Self-Learn & Adapt", cmd_adapt),
+        ("Periodic Review", cmd_review),
+        ("Metamorphic Transform", cmd_morph),
     ]
 
     for step_name, step_fn in steps:
@@ -268,7 +501,7 @@ def cmd_cycle(config: dict, threat_store: ThreatStore, result_store: ResultStore
             )
             console.print("[yellow]Continuing to next step...[/yellow]")
 
-    console.print(Panel("[green]Full cycle complete[/green]", style="bold green"))
+    console.print(Panel("[green]Full cycle complete (with robustness)[/green]", style="bold green"))
 
 
 def cmd_report(config: dict, threat_store: ThreatStore, result_store: ResultStore) -> None:
@@ -373,12 +606,26 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
+    # Part 1: Claude CLI — Intelligence
     subparsers.add_parser("collect", help="Run threat collection from all sources")
     subparsers.add_parser("analyze", help="Classify, plan, and generate tests for unprocessed threats")
-    subparsers.add_parser("implement", help="Implement defense layers for planned threats")
+
+    # Part 2: Claude Code CLI — Implementation (with multi-agent council)
+    subparsers.add_parser("implement", help="Implement defense layers via multi-agent council")
+    subparsers.add_parser("variants", help="Show variant twin status")
+    subparsers.add_parser("council", help="Show multi-agent council session history")
+
+    # Part 3: Claude Code CLI — Management / CI-CD
     subparsers.add_parser("test", help="Run red team tests against all unaddressed threats")
     subparsers.add_parser("optimize", help="Run defense stack optimization")
-    subparsers.add_parser("cycle", help="Run the full pipeline (collect -> analyze -> implement -> test -> optimize)")
+    subparsers.add_parser("integrity", help="Run integrity verification on all defense layers")
+    subparsers.add_parser("review", help="Run periodic code review via Claude Code CLI")
+    subparsers.add_parser("adapt", help="Run self-learning adaptation on defense layers")
+    subparsers.add_parser("morph", help="Run metamorphic transformation on defense layers")
+    subparsers.add_parser("staging", help="Evaluate staging pipeline promotions/rejections")
+
+    # Full cycle & reporting
+    subparsers.add_parser("cycle", help="Run the full pipeline with robustness")
     subparsers.add_parser("report", help="Generate and print the dashboard report")
     subparsers.add_parser("status", help="Show current system status")
 
@@ -386,11 +633,22 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 COMMANDS = {
+    # Part 1: Claude CLI — Intelligence
     "collect": cmd_collect,
     "analyze": cmd_analyze,
+    # Part 2: Claude Code CLI — Implementation (with multi-agent council)
     "implement": cmd_implement,
+    "variants": cmd_variants,
+    "council": cmd_council,
+    # Part 3: Claude Code CLI — Management / CI-CD
     "test": cmd_test,
     "optimize": cmd_optimize,
+    "integrity": cmd_integrity,
+    "review": cmd_review,
+    "adapt": cmd_adapt,
+    "morph": cmd_morph,
+    "staging": cmd_staging,
+    # Full cycle & reporting
     "cycle": cmd_cycle,
     "report": cmd_report,
     "status": cmd_status,
