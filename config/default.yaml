@@ -1,0 +1,36 @@
+scheduler:
+  collect_interval_hours: 6
+  analyze_interval_hours: 1
+  test_interval_hours: 12
+  optimize_interval_hours: 24
+
+claude_api:
+  model: "claude-sonnet-4-6"
+  max_tokens: 4096
+  # API key from ANTHROPIC_API_KEY env var
+
+claude_code:
+  binary: "claude"
+  working_dir: "./src/defender/layers"
+  timeout_seconds: 300
+  # Fully autonomous - no human approval needed
+
+docker:
+  victim_image: "threat-defense-victim:latest"
+  network: "isolated"
+  memory_limit: "512m"
+  cpu_limit: "1.0"
+
+database:
+  threats_db: "./data/threats.db"
+  results_db: "./data/results.db"
+
+logging:
+  level: "INFO"
+  format: "json"
+  file: "./data/agent.log"
+
+defense:
+  min_effectiveness_score: 0.7
+  max_retry_implementations: 3
+  optimization_threshold: 0.5
